@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Plus, X, Download, Upload, Check, AlertCircle } from 'lucide-react';
 
 export default function EANGenerator() {
+  const LONGITUDES_VALIDAS = [8, 12, 13, 14];
   const [marcasTexto, setMarcasTexto] = useState('');
   const [marcasSegmentadas, setMarcasSegmentadas] = useState([]);
   const [claseSeleccionada, setClaseSeleccionada] = useState('');
+  const [longitudEAN, setLongitudEAN] = useState(13);
   const [marca, setMarca] = useState('');
   const [baseManual, setBaseManual] = useState('');
   const [eansGenerados, setEansGenerados] = useState([]);
@@ -36,6 +38,7 @@ export default function EANGenerator() {
         setMarcasTexto(datos.marcasTexto || '');
         setMarcasSegmentadas(datos.marcasSegmentadas || []);
         setClaseSeleccionada(datos.claseSeleccionada || '');
+        setLongitudEAN(LONGITUDES_VALIDAS.includes(datos.longitudEAN) ? datos.longitudEAN : 13);
         setMarca(datos.marca || '');
         setEansGenerados(datos.eansGenerados || []);
         setBlacklist(datos.blacklist || []);
@@ -61,41 +64,54 @@ export default function EANGenerator() {
       marcasTexto,
       marcasSegmentadas,
       claseSeleccionada,
+      longitudEAN,
       marca,
       eansGenerados,
       blacklist,
       contador
     };
     localStorage.setItem('ean-data', JSON.stringify(datos));
-  }, [marcasTexto, marcasSegmentadas, claseSeleccionada, marca, eansGenerados, blacklist, contador]);
+  }, [marcasTexto, marcasSegmentadas, claseSeleccionada, longitudEAN, marca, eansGenerados, blacklist, contador]);
 
-  // Calcular dígito de control EAN-13
+  // Calcular dígito de control GTIN/EAN/UPC (mod 10)
   const calcularDigitoControl = (codigo) => {
     const digitos = codigo.split('').map(Number);
     let suma = 0;
-    
-    for (let i = 0; i < 12; i++) {
-      suma += digitos[i] * (i % 2 === 0 ? 1 : 3);
+
+    for (let i = 0; i < digitos.length; i++) {
+      const desdeDerecha = digitos.length - 1 - i;
+      suma += digitos[i] * (desdeDerecha % 2 === 0 ? 3 : 1);
     }
-    
-    const modulo = suma % 10;
-    return modulo === 0 ? 0 : 10 - modulo;
+
+    return (10 - (suma % 10)) % 10;
   };
 
-  // Generar código EAN completo
-  const generarEAN = (base, secuencia) => {
-    // Asegurar que la base + secuencia tenga 12 dígitos
-    const codigo12 = (base + secuencia).padStart(12, '0').slice(0, 12);
-    const digitoControl = calcularDigitoControl(codigo12);
-    return codigo12 + digitoControl;
+  const esLongitudValida = (valor) => LONGITUDES_VALIDAS.includes(valor);
+
+  const validarCodigo = (codigo) => {
+    if (!/^\d+$/.test(codigo)) {
+      return { valido: false, motivo: 'El código solo puede contener dígitos' };
+    }
+    if (!esLongitudValida(codigo.length)) {
+      return { valido: false, motivo: 'La longitud permitida es 8, 12, 13 o 14 dígitos' };
+    }
+    if (codigo.startsWith('0')) {
+      return { valido: false, motivo: 'El código no puede comenzar con 0' };
+    }
+    const cuerpo = codigo.slice(0, -1);
+    const esperado = calcularDigitoControl(cuerpo);
+    const actual = Number(codigo[codigo.length - 1]);
+    return { valido: esperado === actual, esperado, actual };
   };
 
-  // Verificar si un EAN es válido
-  const validarEAN = (ean) => {
-    if (ean.length !== 13) return false;
-    const codigo12 = ean.slice(0, 12);
-    const digitoControl = parseInt(ean[12]);
-    return calcularDigitoControl(codigo12) === digitoControl;
+  // Generar código completo sin padding izquierdo
+  const generarEAN = (base, secuencia, longitudFinal) => {
+    const longitudCuerpo = longitudFinal - 1;
+    const cuerpo = `${base}${secuencia}`;
+    if (cuerpo.length !== longitudCuerpo) return null;
+    if (cuerpo.startsWith('0')) return null;
+    const digitoControl = calcularDigitoControl(cuerpo);
+    return cuerpo + digitoControl;
   };
 
   // Mostrar mensaje temporal
@@ -111,6 +127,17 @@ export default function EANGenerator() {
     }
 
     const baseActual = baseManual || marca;
+    const longitudCuerpo = longitudEAN - 1;
+
+    if (baseActual.startsWith('0')) {
+      mostrarMensaje('La base no puede comenzar con 0', 'error');
+      return;
+    }
+    if (baseActual.length >= longitudCuerpo) {
+      mostrarMensaje(`La base debe tener menos de ${longitudCuerpo} dígitos para poder secuenciar`, 'error');
+      return;
+    }
+
     let secuenciaActual = contador;
     const nuevosRegistros = [];
 
@@ -120,7 +147,7 @@ export default function EANGenerator() {
 
       do {
         secuenciaActual++;
-        nuevoEAN = generarEAN(baseActual, secuenciaActual.toString());
+        nuevoEAN = generarEAN(baseActual, secuenciaActual.toString(), longitudEAN);
         intentos++;
 
         if (intentos > 10000) {
@@ -139,6 +166,7 @@ export default function EANGenerator() {
         codigo: nuevoEAN,
         fecha: new Date().toISOString(),
         base: baseActual,
+        longitud: longitudEAN,
         secuencia: secuenciaActual,
         clase: claseSeleccionada || null,
         marcaTexto: marcaSegmentada ? marcaSegmentada.nombre : null
@@ -174,26 +202,33 @@ export default function EANGenerator() {
       return;
     }
 
-    if (eanLimpio.length === 13) {
-      const codigo12 = eanLimpio.slice(0, 12);
-      const esperado = calcularDigitoControl(codigo12);
-      const actual = Number(eanLimpio[12]);
-
-      if (esperado === actual) {
+    if (esLongitudValida(eanLimpio.length)) {
+      const validacion = validarCodigo(eanLimpio);
+      if (validacion.valido) {
         setResultadoChecker({
           tipo: 'success',
-          texto: 'EAN válido. El dígito de control es correcto.'
+          texto: 'Código válido. El dígito de control es correcto.'
         });
       } else {
         setResultadoChecker({
           tipo: 'error',
-          texto: `EAN inválido. Debería terminar en ${esperado}. Recomendado: ${codigo12}${esperado}`
+          texto:
+            validacion.esperado !== undefined
+              ? `Código inválido. Debería terminar en ${validacion.esperado}. Recomendado: ${eanLimpio.slice(0, -1)}${validacion.esperado}`
+              : validacion.motivo
         });
       }
       return;
     }
 
-    if (eanLimpio.length === 12) {
+    if (esLongitudValida(eanLimpio.length + 1)) {
+      if (eanLimpio.startsWith('0')) {
+        setResultadoChecker({
+          tipo: 'error',
+          texto: 'El código no puede comenzar con 0.'
+        });
+        return;
+      }
       const recomendado = calcularDigitoControl(eanLimpio);
       setResultadoChecker({
         tipo: 'info',
@@ -204,7 +239,7 @@ export default function EANGenerator() {
 
     setResultadoChecker({
       tipo: 'error',
-      texto: 'Ingresa 12 dígitos (falta check digit) o 13 dígitos (EAN completo).'
+      texto: 'Longitudes válidas: 8, 12, 13 o 14 (o una menos para recomendar dígito).'
     });
   };
 
@@ -214,13 +249,9 @@ export default function EANGenerator() {
     
     if (!eanLimpio) return;
     
-    if (eanLimpio.length !== 13) {
-      mostrarMensaje('El EAN debe tener 13 dígitos', 'error');
-      return;
-    }
-
-    if (!validarEAN(eanLimpio)) {
-      mostrarMensaje('El EAN no es válido (dígito de control incorrecto)', 'error');
+    const validacion = validarCodigo(eanLimpio);
+    if (!validacion.valido) {
+      mostrarMensaje(validacion.motivo || 'El EAN no es válido', 'error');
       return;
     }
 
@@ -253,8 +284,12 @@ export default function EANGenerator() {
       return;
     }
 
-    const eanCompleto = generarEAN(baseManual, contador.toString());
-    setBaseManual(eanCompleto.slice(0, 12));
+    const longitudCuerpo = longitudEAN - 1;
+    if (baseManual.startsWith('0')) {
+      mostrarMensaje('La base no puede comenzar con 0', 'error');
+      return;
+    }
+    setBaseManual(baseManual.slice(0, longitudCuerpo).padEnd(longitudCuerpo, '0'));
     mostrarMensaje('Base autocompletada', 'success');
   };
 
@@ -264,6 +299,7 @@ export default function EANGenerator() {
       marcasTexto,
       marcasSegmentadas,
       claseSeleccionada,
+      longitudEAN,
       marca,
       eansGenerados,
       blacklist,
@@ -293,6 +329,7 @@ export default function EANGenerator() {
         setMarcasTexto(datos.marcasTexto || '');
         setMarcasSegmentadas(datos.marcasSegmentadas || []);
         setClaseSeleccionada(datos.claseSeleccionada || '');
+        setLongitudEAN(LONGITUDES_VALIDAS.includes(datos.longitudEAN) ? datos.longitudEAN : 13);
         setMarca(datos.marca || '');
         setEansGenerados(datos.eansGenerados || []);
         setBlacklist(datos.blacklist || []);
@@ -312,6 +349,7 @@ export default function EANGenerator() {
       setMarcasTexto('');
       setMarcasSegmentadas([]);
       setClaseSeleccionada('');
+      setLongitudEAN(13);
       setBaseManual('');
       setEansGenerados([]);
       setBlacklist([]);
@@ -400,6 +438,26 @@ export default function EANGenerator() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Longitud de código
+                  </label>
+                  <select
+                    value={longitudEAN}
+                    onChange={(e) => setLongitudEAN(Number(e.target.value))}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    {LONGITUDES_VALIDAS.map((longitud) => (
+                      <option key={longitud} value={longitud}>
+                        {longitud} dígitos
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Permitido: 8, 12, 13 o 14 dígitos (sin 0 al inicio).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Marca / Prefijo base
                   </label>
                   <input
@@ -408,10 +466,10 @@ export default function EANGenerator() {
                     onChange={(e) => setMarca(e.target.value.replace(/\D/g, ''))}
                     placeholder="Ej: 779"
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    maxLength="12"
+                    maxLength={longitudEAN - 1}
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    Prefijo GS1 de tu empresa (hasta 12 dígitos)
+                    Prefijo base sin 0 inicial (máx. {longitudEAN - 2} para poder secuenciar)
                   </p>
                 </div>
 
@@ -426,7 +484,7 @@ export default function EANGenerator() {
                       onChange={(e) => setBaseManual(e.target.value.replace(/\D/g, ''))}
                       placeholder="Ingresa los primeros dígitos"
                       className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      maxLength="12"
+                      maxLength={longitudEAN - 1}
                     />
                     <button
                       onClick={autocompletarBase}
@@ -468,7 +526,7 @@ export default function EANGenerator() {
 
               <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                 <p className="text-sm text-gray-600">
-                  Se generará un código EAN-13 basado en {baseManual ? 'la base manual' : 'la marca'} 
+                  Se generará un código de {longitudEAN} dígitos basado en {baseManual ? 'la base manual' : 'la marca'}
                   {' '}que no esté en la blacklist ni ya generado.
                 </p>
               </div>
@@ -482,9 +540,9 @@ export default function EANGenerator() {
                   type="text"
                   value={eanCheckerInput}
                   onChange={(e) => setEanCheckerInput(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Ingresa 12 o 13 dígitos"
+                  placeholder="Ingresa 7,8,11,12,13 o 14 dígitos"
                   className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  maxLength="13"
+                  maxLength="14"
                 />
                 <button
                   onClick={comprobarEAN}
@@ -518,7 +576,7 @@ export default function EANGenerator() {
                   onChange={(e) => setNuevoBlacklist(e.target.value.replace(/\D/g, ''))}
                   placeholder="Ingresa un EAN usado o no válido"
                   className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                  maxLength="13"
+                  maxLength="14"
                   onKeyPress={(e) => e.key === 'Enter' && agregarABlacklist()}
                 />
                 <button
@@ -609,6 +667,7 @@ export default function EANGenerator() {
                         </div>
                         <div className="text-xs text-gray-600 space-y-1">
                           <div>Base: <span className="font-mono">{ean.base}</span></div>
+                          <div>Longitud: <span className="font-mono">{ean.longitud || ean.codigo.length}</span></div>
                           <div>Secuencia: <span className="font-mono">{ean.secuencia}</span></div>
                           {ean.clase && <div>Clase: <span className="font-mono">{ean.clase}</span></div>}
                           {ean.marcaTexto && <div>Marca: <span>{ean.marcaTexto}</span></div>}
@@ -626,12 +685,12 @@ export default function EANGenerator() {
                     {/* Código de barras simulado */}
                     <div className="mt-3 flex gap-[2px] h-16">
                       {ean.codigo.split('').map((digito, i) => {
-                        const alturas = [60, 80, 70, 85, 75, 90, 65, 95, 70, 80, 75, 85, 70];
+                        const alturas = [60, 80, 70, 85, 75, 90, 65, 95];
                         return (
                           <div
                             key={i}
                             className="flex-1 bg-gray-800 rounded-sm"
-                            style={{ height: `${alturas[i]}%` }}
+                            style={{ height: `${alturas[i % alturas.length]}%` }}
                           />
                         );
                       })}
