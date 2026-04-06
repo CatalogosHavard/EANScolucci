@@ -76,13 +76,30 @@
 
         // Componente principal
         function EANGenerator() {
+            const [marcasTexto, setMarcasTexto] = useState('');
+            const [marcasSegmentadas, setMarcasSegmentadas] = useState([]);
+            const [claseSeleccionada, setClaseSeleccionada] = useState('');
             const [marca, setMarca] = useState('');
             const [baseManual, setBaseManual] = useState('');
             const [eansGenerados, setEansGenerados] = useState([]);
             const [blacklist, setBlacklist] = useState([]);
             const [nuevoBlacklist, setNuevoBlacklist] = useState('');
+            const [eanCheckerInput, setEanCheckerInput] = useState('');
+            const [resultadoChecker, setResultadoChecker] = useState(null);
             const [contador, setContador] = useState(0);
             const [mensaje, setMensaje] = useState({ texto: '', tipo: '' });
+
+            const segmentarMarcas = (texto) => {
+                const marcas = texto
+                    .split(/[\n,;]+/)
+                    .map((item) => item.trim())
+                    .filter(Boolean);
+
+                return marcas.map((nombre, index) => ({
+                    nombre,
+                    clase: `marca-${index + 1}`
+                }));
+            };
 
             // Cargar datos del localStorage al iniciar
             useEffect(() => {
@@ -90,6 +107,9 @@
                 if (datosGuardados) {
                     try {
                         const datos = JSON.parse(datosGuardados);
+                        setMarcasTexto(datos.marcasTexto || '');
+                        setMarcasSegmentadas(datos.marcasSegmentadas || []);
+                        setClaseSeleccionada(datos.claseSeleccionada || '');
                         setMarca(datos.marca || '');
                         setEansGenerados(datos.eansGenerados || []);
                         setBlacklist(datos.blacklist || []);
@@ -102,14 +122,26 @@
 
             // Guardar datos en localStorage cuando cambien
             useEffect(() => {
+                const nuevasMarcas = segmentarMarcas(marcasTexto);
+                setMarcasSegmentadas(nuevasMarcas);
+
+                if (claseSeleccionada && !nuevasMarcas.some((m) => m.clase === claseSeleccionada)) {
+                    setClaseSeleccionada('');
+                }
+            }, [marcasTexto, claseSeleccionada]);
+
+            useEffect(() => {
                 const datos = {
+                    marcasTexto,
+                    marcasSegmentadas,
+                    claseSeleccionada,
                     marca,
                     eansGenerados,
                     blacklist,
                     contador
                 };
                 localStorage.setItem('ean-data', JSON.stringify(datos));
-            }, [marca, eansGenerados, blacklist, contador]);
+            }, [marcasTexto, marcasSegmentadas, claseSeleccionada, marca, eansGenerados, blacklist, contador]);
 
             // Calcular dígito de control EAN-13
             const calcularDigitoControl = (codigo) => {
@@ -145,39 +177,107 @@
                 setTimeout(() => setMensaje({ texto: '', tipo: '' }), 3000);
             };
 
-            // Generar nuevo EAN
-            const generarNuevoEAN = () => {
+            const generarLoteEAN = (cantidad) => {
                 if (!marca && !baseManual) {
                     mostrarMensaje('Debes cargar una marca o base manual', 'error');
                     return;
                 }
 
                 const baseActual = baseManual || marca;
-                let intentos = 0;
-                let nuevoEAN;
                 let secuenciaActual = contador;
+                const nuevosRegistros = [];
 
-                do {
-                    secuenciaActual++;
-                    nuevoEAN = generarEAN(baseActual, secuenciaActual.toString());
-                    intentos++;
-                    
-                    if (intentos > 10000) {
-                        mostrarMensaje('No se pudo generar un EAN válido después de 10000 intentos', 'error');
-                        return;
-                    }
-                } while (blacklist.includes(nuevoEAN) || eansGenerados.some(e => e.codigo === nuevoEAN));
+                for (let i = 0; i < cantidad; i++) {
+                    let intentos = 0;
+                    let nuevoEAN;
 
-                const nuevoRegistro = {
-                    codigo: nuevoEAN,
-                    fecha: new Date().toISOString(),
-                    base: baseActual,
-                    secuencia: secuenciaActual
-                };
+                    do {
+                        secuenciaActual++;
+                        nuevoEAN = generarEAN(baseActual, secuenciaActual.toString());
+                        intentos++;
+                        
+                        if (intentos > 10000) {
+                            mostrarMensaje('No se pudo generar un EAN válido después de 10000 intentos', 'error');
+                            return;
+                        }
+                    } while (
+                        blacklist.includes(nuevoEAN) ||
+                        eansGenerados.some((e) => e.codigo === nuevoEAN) ||
+                        nuevosRegistros.some((e) => e.codigo === nuevoEAN)
+                    );
 
-                setEansGenerados([nuevoRegistro, ...eansGenerados]);
+                    const marcaSegmentada = marcasSegmentadas.find((m) => m.clase === claseSeleccionada);
+                    nuevosRegistros.push({
+                        codigo: nuevoEAN,
+                        fecha: new Date().toISOString(),
+                        base: baseActual,
+                        secuencia: secuenciaActual,
+                        clase: claseSeleccionada || null,
+                        marcaTexto: marcaSegmentada ? marcaSegmentada.nombre : null
+                    });
+                }
+
+                setEansGenerados([...nuevosRegistros.reverse(), ...eansGenerados]);
                 setContador(secuenciaActual);
-                mostrarMensaje(`EAN generado: ${nuevoEAN}`, 'success');
+                mostrarMensaje(
+                    cantidad === 1
+                        ? `EAN generado: ${nuevosRegistros[0].codigo}`
+                        : `Se generaron ${cantidad} EANs consecutivos`,
+                    'success'
+                );
+            };
+
+            // Generar nuevo EAN
+            const generarNuevoEAN = () => {
+                generarLoteEAN(1);
+            };
+
+            // Generar 5 EANs consecutivos
+            const generarCincoEAN = () => {
+                generarLoteEAN(5);
+            };
+
+            // Comprobar EAN e indicar dígito recomendado si falta
+            const comprobarEAN = () => {
+                const eanLimpio = eanCheckerInput.replace(/\D/g, '');
+
+                if (!eanLimpio) {
+                    mostrarMensaje('Ingresa un EAN para comprobar', 'error');
+                    return;
+                }
+
+                if (eanLimpio.length === 13) {
+                    const codigo12 = eanLimpio.slice(0, 12);
+                    const esperado = calcularDigitoControl(codigo12);
+                    const actual = Number(eanLimpio[12]);
+
+                    if (esperado === actual) {
+                        setResultadoChecker({
+                            tipo: 'success',
+                            texto: 'EAN válido. El dígito de control es correcto.'
+                        });
+                    } else {
+                        setResultadoChecker({
+                            tipo: 'error',
+                            texto: `EAN inválido. Debería terminar en ${esperado}. Recomendado: ${codigo12}${esperado}`
+                        });
+                    }
+                    return;
+                }
+
+                if (eanLimpio.length === 12) {
+                    const recomendado = calcularDigitoControl(eanLimpio);
+                    setResultadoChecker({
+                        tipo: 'info',
+                        texto: `Falta 1 dígito. Recomendado: ${eanLimpio}${recomendado}`
+                    });
+                    return;
+                }
+
+                setResultadoChecker({
+                    tipo: 'error',
+                    texto: 'Ingresa 12 dígitos (falta check digit) o 13 dígitos (EAN completo).'
+                });
             };
 
             // Agregar EAN a la blacklist
@@ -233,6 +333,9 @@
             // Exportar datos
             const exportarDatos = () => {
                 const datos = {
+                    marcasTexto,
+                    marcasSegmentadas,
+                    claseSeleccionada,
                     marca,
                     eansGenerados,
                     blacklist,
@@ -259,6 +362,9 @@
                 reader.onload = (evento) => {
                     try {
                         const datos = JSON.parse(evento.target.result);
+                        setMarcasTexto(datos.marcasTexto || '');
+                        setMarcasSegmentadas(datos.marcasSegmentadas || []);
+                        setClaseSeleccionada(datos.claseSeleccionada || '');
                         setMarca(datos.marca || '');
                         setEansGenerados(datos.eansGenerados || []);
                         setBlacklist(datos.blacklist || []);
@@ -275,9 +381,14 @@
             const limpiarDatos = () => {
                 if (confirm('¿Estás seguro de que quieres borrar todos los datos?')) {
                     setMarca('');
+                    setMarcasTexto('');
+                    setMarcasSegmentadas([]);
+                    setClaseSeleccionada('');
                     setBaseManual('');
                     setEansGenerados([]);
                     setBlacklist([]);
+                    setEanCheckerInput('');
+                    setResultadoChecker(null);
                     setContador(0);
                     localStorage.removeItem('ean-data');
                     mostrarMensaje('Todos los datos han sido borrados', 'info');
@@ -314,6 +425,51 @@
                                     <h2 className="text-xl font-semibold text-gray-800 mb-4">Configuración</h2>
                                     
                                     <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Marcas (texto)
+                                            </label>
+                                            <textarea
+                                                value={marcasTexto}
+                                                onChange={(e) => setMarcasTexto(e.target.value)}
+                                                placeholder="Escribe una marca por línea (o separadas por coma)"
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent min-h-28"
+                                            />
+                                            <p className="mt-1 text-xs text-gray-500">
+                                                La app segmenta las marcas y las guarda como clases (marca-1, marca-2, ...).
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Clase de marca para los próximos EANs
+                                            </label>
+                                            <select
+                                                value={claseSeleccionada}
+                                                onChange={(e) => setClaseSeleccionada(e.target.value)}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                            >
+                                                <option value="">Sin clase</option>
+                                                {marcasSegmentadas.map((m) => (
+                                                    <option key={m.clase} value={m.clase}>
+                                                        {m.clase} - {m.nombre}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div className="flex flex-wrap gap-2">
+                                            {marcasSegmentadas.length === 0 ? (
+                                                <span className="text-xs text-gray-500">No hay marcas segmentadas</span>
+                                            ) : (
+                                                marcasSegmentadas.map((m) => (
+                                                    <span key={m.clase} className="px-2 py-1 text-xs rounded-full bg-indigo-100 text-indigo-800">
+                                                        {m.clase}: {m.nombre}
+                                                    </span>
+                                                ))
+                                            )}
+                                        </div>
+
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
                                                 Marca / Prefijo base
@@ -375,6 +531,12 @@
                                         <Plus className="w-5 h-5" />
                                         Generar Nuevo EAN
                                     </button>
+                                    <button
+                                        onClick={generarCincoEAN}
+                                        className="w-full mt-2 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-semibold"
+                                    >
+                                        Generar 5 EANs consecutivos
+                                    </button>
 
                                     <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                                         <p className="text-sm text-gray-600">
@@ -382,6 +544,39 @@
                                             {' '}que no esté en la blacklist ni ya generado.
                                         </p>
                                     </div>
+                                </div>
+
+                                {/* EAN Checker */}
+                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                    <h2 className="text-xl font-semibold text-gray-800 mb-4">EAN Checker</h2>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={eanCheckerInput}
+                                            onChange={(e) => setEanCheckerInput(e.target.value.replace(/\D/g, ''))}
+                                            placeholder="Ingresa 12 o 13 dígitos"
+                                            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                            maxLength="13"
+                                        />
+                                        <button
+                                            onClick={comprobarEAN}
+                                            className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 transition-colors"
+                                        >
+                                            Comprobar
+                                        </button>
+                                    </div>
+
+                                    {resultadoChecker && (
+                                        <div className={`mt-4 p-3 rounded-lg text-sm ${
+                                            resultadoChecker.tipo === 'success'
+                                                ? 'bg-green-100 text-green-800'
+                                                : resultadoChecker.tipo === 'error'
+                                                    ? 'bg-red-100 text-red-800'
+                                                    : 'bg-blue-100 text-blue-800'
+                                        }`}>
+                                            {resultadoChecker.texto}
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Blacklist */}
@@ -487,6 +682,8 @@
                                                         <div className="text-xs text-gray-600 space-y-1">
                                                             <div>Base: <span className="font-mono">{ean.base}</span></div>
                                                             <div>Secuencia: <span className="font-mono">{ean.secuencia}</span></div>
+                                                            {ean.clase && <div>Clase: <span className="font-mono">{ean.clase}</span></div>}
+                                                            {ean.marcaTexto && <div>Marca: <span>{ean.marcaTexto}</span></div>}
                                                             <div>Fecha: {new Date(ean.fecha).toLocaleString('es-AR')}</div>
                                                         </div>
                                                     </div>
